@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Models\IdCardRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -254,72 +255,158 @@ class StudentController extends Controller
         }
     }
 
-    /**
-     * Show ID card details
-     */
-    public function showIdCard()
-    {
-        $user = Auth::user();
 
-        $viewData = [
-            'meta_title' => 'My ID Card | Lexa University',
-            'meta_desc' => 'View your student ID card details',
-            'meta_image' => url('logo.png'),
-            'user' => $user,
-        ];
 
-        return view('student.id-card.show', $viewData);
+
+
+
+public function showIdCardRequest()
+{
+    $user = Auth::user();
+
+    // Check if user already has a pending/approved request
+    $existingRequest = IdCardRequest::where('user_id', $user->id)
+                                  ->whereIn('status', ['pending', 'approved', 'printed'])
+                                  ->first();
+
+    $viewData = [
+        'meta_title' => 'Request ID Card | Lexa University',
+        'meta_desc' => 'Request a new student ID card',
+        'meta_image' => url('logo.png'),
+        'user' => $user,
+        'existingRequest' => $existingRequest,
+    ];
+
+    return view('student.id-card.request', $viewData);
+}
+
+/**
+ * Submit ID card request
+ */
+public function submitIdCardRequest(Request $request)
+{
+    $user = Auth::user();
+
+    // Check if user already has a pending request
+    $existingRequest = IdCardRequest::where('user_id', $user->id)
+                                  ->whereIn('status', ['pending', 'approved', 'printed'])
+                                  ->first();
+
+    if ($existingRequest) {
+        return back()->with('error', 'You already have a pending ID card request.');
     }
 
-    /**
-     * Show ID card request form
-     */
-    public function showIdCardRequest()
-    {
-        $user = Auth::user();
+    $request->validate([
+        'photo' => 'required|image|mimes:jpeg,png,jpg|max:2048|dimensions:min_width=300,min_height=400',
+        'reason' => 'required|string|in:new,replacement,lost,damaged',
+    ], [
+        'photo.required' => 'Please upload your passport photo.',
+        'photo.image' => 'The file must be an image.',
+        'photo.mimes' => 'Only JPEG, PNG, and JPG images are allowed.',
+        'photo.max' => 'The photo size cannot exceed 2MB.',
+        'photo.dimensions' => 'Photo must be at least 300x400 pixels (passport size).',
+        'reason.required' => 'Please select a reason for your request.',
+    ]);
 
-        $viewData = [
-            'meta_title' => 'Request ID Card | Lexa University',
-            'meta_desc' => 'Request a new student ID card',
-            'meta_image' => url('logo.png'),
-            'user' => $user,
-        ];
+    try {
+        // Store photo
+        $photoPath = $request->file('photo')->store('id-card-photos', 'public');
 
-        return view('student.id-card.request', $viewData);
+        // Create request
+        IdCardRequest::create([
+            'user_id' => $user->id,
+            'photo' => $photoPath,
+            'reason' => $request->reason,
+            'status' => 'pending',
+        ]);
+
+        Log::info('ID card request submitted', [
+            'user_id' => $user->id,
+            'matric_no' => $user->matric_no,
+            'reason' => $request->reason,
+            'ip' => $request->ip(),
+        ]);
+
+        return redirect()->route('student.id-card.status')
+            ->with('success', 'ID card request submitted successfully! You will be notified once it\'s processed.');
+
+    } catch (\Exception $e) {
+        Log::error('Failed to submit ID card request', [
+            'user_id' => $user->id,
+            'error' => $e->getMessage(),
+            'ip' => $request->ip(),
+        ]);
+
+        return back()->with('error', 'Failed to submit request. Please try again.');
+    }
+}
+
+/**
+ * Show ID card status
+ */
+public function showIdCardStatus()
+{
+    $user = Auth::user();
+
+    $requests = IdCardRequest::where('user_id', $user->id)
+                            ->with('reviewer')
+                            ->orderBy('created_at', 'desc')
+                            ->get();
+
+    $viewData = [
+        'meta_title' => 'ID Card Status | Lexa University',
+        'meta_desc' => 'Check your ID card request status',
+        'meta_image' => url('logo.png'),
+        'requests' => $requests,
+    ];
+
+    return view('student.id-card.status', $viewData);
+}
+
+/**
+ * Show ID card details
+ */
+public function showIdCard()
+{
+    $user = Auth::user();
+
+    $activeRequest = IdCardRequest::where('user_id', $user->id)
+                                 ->whereIn('status', ['ready', 'collected'])
+                                 ->with('reviewer')
+                                 ->first();
+
+    $viewData = [
+        'meta_title' => 'My ID Card | Lexa University',
+        'meta_desc' => 'View your student ID card',
+        'meta_image' => url('logo.png'),
+        'request' => $activeRequest,
+        'user' => $user,
+    ];
+
+    return view('student.id-card.show', $viewData);
+}
+
+/**
+ * Download ID card
+ */
+public function downloadIdCard()
+{
+    $user = Auth::user();
+
+    $request = IdCardRequest::where('user_id', $user->id)
+                           ->whereIn('status', ['ready', 'collected'])
+                           ->first();
+
+    if (!$request || !$request->id_card_file) {
+        return back()->with('error', 'ID card not available for download.');
     }
 
-    /**
-     * Submit ID card request
-     */
-    public function submitIdCardRequest(Request $request)
-    {
-        // Implementation for ID card request submission
-        return back()->with('success', 'ID card request submitted successfully!');
+    $filePath = storage_path('app/public/' . $request->id_card_file);
+
+    if (!file_exists($filePath)) {
+        return back()->with('error', 'ID card file not found.');
     }
 
-    /**
-     * Show ID card status
-     */
-    public function showIdCardStatus()
-    {
-        $user = Auth::user();
-
-        $viewData = [
-            'meta_title' => 'ID Card Status | Lexa University',
-            'meta_desc' => 'Check your ID card request status',
-            'meta_image' => url('logo.png'),
-            'user' => $user,
-        ];
-
-        return view('student.id-card.status', $viewData);
-    }
-
-    /**
-     * Download ID card
-     */
-    public function downloadIdCard()
-    {
-        // Implementation for ID card download
-        return back()->with('info', 'ID card download feature coming soon!');
-    }
+    return response()->download($filePath, $user->matric_no . '_ID_Card.pdf');
+}
 }
