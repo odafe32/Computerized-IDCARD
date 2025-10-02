@@ -78,26 +78,33 @@
                         <button type="button" class="btn header-item noti-icon waves-effect" id="page-header-notifications-dropdown"
                             data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
                             <i class="ti-bell"></i>
-                            <span class="badge text-bg-danger rounded-pill">0</span>
+                            <span class="badge text-bg-danger rounded-pill" id="notification-count">0</span>
                         </button>
                         <div class="dropdown-menu dropdown-menu-lg dropdown-menu-end p-0"
-                            aria-labelledby="page-header-notifications-dropdown">
+                            aria-labelledby="page-header-notifications-dropdown" style="width: 350px;">
                             <div class="p-3">
                                 <div class="row align-items-center">
                                     <div class="col">
                                         <h5 class="m-0">Notifications</h5>
                                     </div>
+                                    <div class="col-auto">
+                                        <button class="btn btn-sm btn-link text-decoration-none" id="mark-all-read">
+                                            Mark all as read
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
-                            <div data-simplebar style="max-height: 230px;">
-                                <div class="text-center p-4">
-                                    <i class="mdi mdi-bell-outline font-size-24 text-muted"></i>
-                                    <p class="text-muted mt-2">No new notifications</p>
+                            <div data-simplebar style="max-height: 300px;" id="notifications-container">
+                                <div class="text-center p-4" id="notifications-loading">
+                                    <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                    <p class="text-muted mt-2 mb-0">Loading notifications...</p>
                                 </div>
                             </div>
                             <div class="p-2 border-top">
-                                <a class="btn btn-sm btn-link font-size-14 w-100 text-center" href="javascript:void(0)">
-                                    View all
+                                <a class="btn btn-sm btn-link font-size-14 w-100 text-center" href="{{ route('student.notifications.all') }}">
+                                    View all notifications
                                 </a>
                             </div>
                         </div>
@@ -245,6 +252,13 @@
     <!-- Custom JavaScript -->
     <script>
         $(document).ready(function() {
+            // Set CSRF token for AJAX requests
+            $.ajaxSetup({
+                headers: {
+                    'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content')
+                }
+            });
+
             // Set active menu item based on current route
             var currentUrl = window.location.href;
             $('#side-menu a').each(function() {
@@ -275,8 +289,174 @@
                     }
                 }
             });
+
+            // Notification System
+            function loadNotifications() {
+                $.ajax({
+                    url: '{{ route("student.notifications.get") }}',
+                    method: 'GET',
+                    success: function(response) {
+                        updateNotificationDropdown(response.notifications, response.unread_count);
+                    },
+                    error: function() {
+                        $('#notifications-container').html(`
+                            <div class="text-center p-4">
+                                <i class="mdi mdi-alert-circle font-size-24 text-danger"></i>
+                                <p class="text-muted mt-2 mb-0">Failed to load notifications</p>
+                            </div>
+                        `);
+                    }
+                });
+            }
+
+            function updateNotificationDropdown(notifications, unreadCount) {
+                // Update notification count badge
+                const countBadge = $('#notification-count');
+                if (unreadCount > 0) {
+                    countBadge.text(unreadCount).show();
+                } else {
+                    countBadge.hide();
+                }
+
+                // Update notifications container
+                const container = $('#notifications-container');
+
+                if (notifications.length === 0) {
+                    container.html(`
+                        <div class="text-center p-4">
+                            <i class="mdi mdi-bell-outline font-size-24 text-muted"></i>
+                            <p class="text-muted mt-2 mb-0">No notifications</p>
+                        </div>
+                    `);
+                    return;
+                }
+
+                let notificationsHtml = '';
+                notifications.forEach(function(notification) {
+                    const readClass = notification.is_read ? 'notification-read' : 'notification-unread';
+                    const actionUrl = notification.action_url || '#';
+
+                    notificationsHtml += `
+                        <a href="${actionUrl}" class="text-reset notification-item ${readClass}" data-notification-id="${notification.id}">
+                            <div class="d-flex p-3 border-bottom">
+                                <div class="flex-shrink-0 me-3">
+                                    <div class="avatar-xs">
+                                        <span class="avatar-title ${notification.badge_class} rounded-circle">
+                                            <i class="${notification.icon}"></i>
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="flex-grow-1">
+                                    <h6 class="mb-1 font-size-14">${notification.title}</h6>
+                                    <div class="text-muted">
+                                        <p class="mb-1 font-size-13">${notification.message}</p>
+                                        <small class="text-muted">${notification.created_at}</small>
+                                    </div>
+                                </div>
+                                ${!notification.is_read ? '<div class="flex-shrink-0"><div class="badge bg-primary rounded-pill">New</div></div>' : ''}
+                            </div>
+                        </a>
+                    `;
+                });
+
+                container.html(notificationsHtml);
+            }
+
+            // Load notifications when dropdown is opened
+            $('#page-header-notifications-dropdown').on('click', function() {
+                loadNotifications();
+            });
+
+            // Mark notification as read when clicked
+            $(document).on('click', '.notification-item', function(e) {
+                const notificationId = $(this).data('notification-id');
+                const isUnread = $(this).hasClass('notification-unread');
+
+                if (isUnread && notificationId) {
+                    $.ajax({
+                        url: `/student/notifications/${notificationId}/read`,
+                        method: 'POST',
+                        success: function() {
+                            // Update UI to show as read
+                            $(`.notification-item[data-notification-id="${notificationId}"]`)
+                                .removeClass('notification-unread')
+                                .addClass('notification-read')
+                                .find('.badge').remove();
+
+                            // Update count
+                            const currentCount = parseInt($('#notification-count').text()) || 0;
+                            const newCount = Math.max(0, currentCount - 1);
+                            if (newCount > 0) {
+                                $('#notification-count').text(newCount);
+                            } else {
+                                $('#notification-count').hide();
+                            }
+                        }
+                    });
+                }
+            });
+
+            // Mark all notifications as read
+            $('#mark-all-read').on('click', function(e) {
+                e.preventDefault();
+
+                $.ajax({
+                    url: '{{ route("student.notifications.mark-all-read") }}',
+                    method: 'POST',
+                    success: function() {
+                        // Update UI
+                        $('.notification-item')
+                            .removeClass('notification-unread')
+                            .addClass('notification-read')
+                            .find('.badge').remove();
+
+                        $('#notification-count').hide();
+
+                        // Show success message
+                        toastr.success('All notifications marked as read');
+                    },
+                    error: function() {
+                        toastr.error('Failed to mark notifications as read');
+                    }
+                });
+            });
+
+            // Load notifications on page load
+            loadNotifications();
+
+            // Refresh notifications every 30 seconds
+            setInterval(loadNotifications, 30000);
         });
     </script>
+
+    <!-- Notification Styles -->
+    <style>
+        .notification-item {
+            transition: background-color 0.2s ease;
+        }
+
+        .notification-item:hover {
+            background-color: #f8f9fa;
+        }
+
+        .notification-unread {
+            background-color: #f0f8ff;
+            border-left: 3px solid #007bff;
+        }
+
+        .notification-read {
+            opacity: 0.8;
+        }
+
+        .avatar-title {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+    </style>
 
     @stack('scripts')
 </body>
