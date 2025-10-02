@@ -102,11 +102,7 @@
                                     <p class="text-muted mt-2 mb-0">Loading notifications...</p>
                                 </div>
                             </div>
-                            <div class="p-2 border-top">
-                                <a class="btn btn-sm btn-link font-size-14 w-100 text-center" href="{{ route('student.notifications.all') }}">
-                                    View all notifications
-                                </a>
-                            </div>
+
                         </div>
                     </div>
 

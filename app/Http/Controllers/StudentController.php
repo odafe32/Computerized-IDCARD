@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\Rule;
+
 use Illuminate\Support\Str;
 use PDF;
 
@@ -280,6 +281,35 @@ public function showIdCardRequest()
     return view('student.id-card.request', $viewData);
 }
 
+
+
+/**
+ * Show ID card status
+ */
+public function showIdCardStatus()
+{
+    $user = Auth::user();
+
+    $requests = IdCardRequest::where('user_id', $user->id)
+                            ->with('reviewer')
+                            ->orderBy('created_at', 'desc')
+                            ->get();
+
+    $viewData = [
+        'meta_title' => 'ID Card Status | Lexa University',
+        'meta_desc' => 'Check your ID card request status',
+        'meta_image' => url('logo.png'),
+        'requests' => $requests,
+    ];
+
+    return view('student.id-card.status', $viewData);
+}
+/**
+ * Download ID card
+ */
+
+
+
 /**
  * Submit ID card request
  */
@@ -298,7 +328,8 @@ public function submitIdCardRequest(Request $request)
 
     $request->validate([
         'photo' => 'required|image|mimes:jpeg,png,jpg|max:2048|dimensions:min_width=300,min_height=400',
-        'reason' => 'required|string|in:new,replacement,lost,damaged',
+        'reason' => 'required|string|in:new,replacement,lost,damaged,name_change',
+        'additional_info' => 'nullable|string|max:500',
     ], [
         'photo.required' => 'Please upload your passport photo.',
         'photo.image' => 'The file must be an image.',
@@ -315,8 +346,9 @@ public function submitIdCardRequest(Request $request)
         // Create request
         IdCardRequest::create([
             'user_id' => $user->id,
-            'photo' => $photoPath,
+            'photo_path' => $photoPath,
             'reason' => $request->reason,
+            'additional_info' => $request->additional_info,
             'status' => 'pending',
         ]);
 
@@ -342,25 +374,54 @@ public function submitIdCardRequest(Request $request)
 }
 
 /**
- * Show ID card status
+ * Download ID card
  */
-public function showIdCardStatus()
+public function downloadIdCard(IdCardRequest $idCard = null)
 {
     $user = Auth::user();
 
-    $requests = IdCardRequest::where('user_id', $user->id)
-                            ->with('reviewer')
-                            ->orderBy('created_at', 'desc')
-                            ->get();
+    // If no specific ID card is provided, get the latest ready/collected one
+    if (!$idCard) {
+        $idCard = IdCardRequest::where('user_id', $user->id)
+                              ->whereIn('status', ['ready', 'collected'])
+                              ->whereNotNull('generated_card_path')
+                              ->orderBy('created_at', 'desc')
+                              ->first();
+    }
 
-    $viewData = [
-        'meta_title' => 'ID Card Status | Lexa University',
-        'meta_desc' => 'Check your ID card request status',
-        'meta_image' => url('logo.png'),
-        'requests' => $requests,
-    ];
+    // Ensure the ID card belongs to the current user
+    if (!$idCard || $idCard->user_id !== $user->id) {
+        return back()->with('error', 'ID card not found or access denied.');
+    }
 
-    return view('student.id-card.status', $viewData);
+    // Check if the card can be downloaded
+    if (!$idCard->canBeDownloaded()) {
+        return back()->with('error', 'ID card is not ready for download yet.');
+    }
+
+    try {
+        $fileName = "ID_Card_{$user->matric_no}_{$user->name}.pdf";
+
+        Log::info('Student downloaded ID card', [
+            'user_id' => $user->id,
+            'matric_no' => $user->matric_no,
+            'request_id' => $idCard->id,
+            'card_number' => $idCard->card_number,
+            'ip' => request()->ip(),
+        ]);
+
+        return Storage::disk('public')->download($idCard->generated_card_path, $fileName);
+
+    } catch (\Exception $e) {
+        Log::error('Failed to download ID card', [
+            'user_id' => $user->id,
+            'request_id' => $idCard->id,
+            'error' => $e->getMessage(),
+            'ip' => request()->ip(),
+        ]);
+
+        return back()->with('error', 'Failed to download ID card. Please try again.');
+    }
 }
 
 /**
@@ -373,13 +434,14 @@ public function showIdCard()
     $activeRequest = IdCardRequest::where('user_id', $user->id)
                                  ->whereIn('status', ['ready', 'collected'])
                                  ->with('reviewer')
+                                 ->orderBy('created_at', 'desc')
                                  ->first();
 
     $viewData = [
         'meta_title' => 'My ID Card | Lexa University',
         'meta_desc' => 'View your student ID card',
         'meta_image' => url('logo.png'),
-        'request' => $activeRequest,
+        'idCardRequest' => $activeRequest,
         'user' => $user,
     ];
 
@@ -387,26 +449,50 @@ public function showIdCard()
 }
 
 /**
- * Download ID card
+ * Cancel ID card request
  */
-public function downloadIdCard()
+public function cancelIdCardRequest(IdCardRequest $idCard)
 {
     $user = Auth::user();
 
-    $request = IdCardRequest::where('user_id', $user->id)
-                           ->whereIn('status', ['ready', 'collected'])
-                           ->first();
-
-    if (!$request || !$request->id_card_file) {
-        return back()->with('error', 'ID card not available for download.');
+    // Ensure the request belongs to the current user
+    if ($idCard->user_id !== $user->id) {
+        return back()->with('error', 'Request not found or access denied.');
     }
 
-    $filePath = storage_path('app/public/' . $request->id_card_file);
-
-    if (!file_exists($filePath)) {
-        return back()->with('error', 'ID card file not found.');
+    // Check if request can be cancelled
+    if (!$idCard->canBeCancelled()) {
+        return back()->with('error', 'This request cannot be cancelled at this stage.');
     }
 
-    return response()->download($filePath, $user->matric_no . '_ID_Card.pdf');
+    try {
+        // Delete uploaded photo if exists
+        if ($idCard->photo_path && Storage::disk('public')->exists($idCard->photo_path)) {
+            Storage::disk('public')->delete($idCard->photo_path);
+        }
+
+        $requestNumber = $idCard->request_number;
+        $idCard->delete();
+
+        Log::info('Student cancelled ID card request', [
+            'user_id' => $user->id,
+            'matric_no' => $user->matric_no,
+            'request_number' => $requestNumber,
+            'ip' => request()->ip(),
+        ]);
+
+        return redirect()->route('student.id-card.status')
+            ->with('success', 'ID card request cancelled successfully.');
+
+    } catch (\Exception $e) {
+        Log::error('Failed to cancel ID card request', [
+            'user_id' => $user->id,
+            'request_id' => $idCard->id,
+            'error' => $e->getMessage(),
+            'ip' => request()->ip(),
+        ]);
+
+        return back()->with('error', 'Failed to cancel request. Please try again.');
+    }
 }
 }
