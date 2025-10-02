@@ -67,18 +67,21 @@ Route::middleware('auth')->group(function () {
         Route::get('/dashboard', [StudentController::class, 'showDashboard'])->name('dashboard');
 
         // Profile Routes
-        Route::get('/profile', [StudentController::class, 'showProfile'])->name('profile.show');
+        Route::get('/profile', [StudentController::class, 'showProfile'])->name('profile');
         Route::get('/profile/edit', [StudentController::class, 'editProfile'])->name('profile.edit');
         Route::put('/profile', [StudentController::class, 'updateProfile'])->name('profile.update');
         Route::post('/profile/photo', [StudentController::class, 'updatePhoto'])->name('profile.photo');
 
+
         // ID Card Request Routes
+        Route::get('/id-card/show', [StudentController::class, 'showIdCard'])->name('id-card.show');
         Route::get('/id-card/request', [StudentController::class, 'showIdCardRequest'])->name('id-card.request');
         Route::post('/id-card/request', [StudentController::class, 'submitIdCardRequest'])->name('id-card.submit');
         Route::get('/id-card/status', [StudentController::class, 'showIdCardStatus'])->name('id-card.status');
         Route::get('/id-card/download', [StudentController::class, 'downloadIdCard'])->name('id-card.download');
 
-        // Change Password Routes
+
+
         Route::get('/change-password', [StudentController::class, 'showChangePassword'])->name('password.change');
         Route::put('/change-password', [StudentController::class, 'updatePassword'])->name('password.update');
     });
